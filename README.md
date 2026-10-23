@@ -1,5 +1,10 @@
 # VGC Multi (Lead + Back): private Showdown server
 
+## Formats
+- **[Gen 9 Champions] VGC Reg M-C Multi Lead+Back** (Best-of-1): Open Team Sheets are optional (all 4 players must accept).
+- **[Gen 9 Champions] VGC Reg M-C Multi Lead+Back Bo3** (Best-of-3): Open Team Sheets are mandatory and shown automatically.
+  Pick the Bo3 format instead of the Bo1 one when challenging. Everything else (teams, picks, rules) is identical.
+
 ## Install
     ./setup.sh
     cd pokemon-showdown && node pokemon-showdown 8000
@@ -36,6 +41,18 @@ Teams: Player 1 + Player 3 vs Player 2 + Player 4 (3 is allied with 1, 4 with 2)
 - If all your own Pokemon have fainted but your ally still has a benched one, you can still bring it in.
   The team loses only when all 4 Pokemon have fainted.
 
+## Best-of-3 series
+In the Bo3 format the first team to win 2 games wins the series. You set up game 1 exactly like a normal battle. When a
+game ends, the room announces the result and the series score, and 20 seconds later the same four players are put into
+the next game automatically, with the same teams (players 3 and 4 again use a copy of their ally's team) and fresh
+lead/back picks and Open Team Sheets. A tied game is replayed (at most 5 games in total). If a player is no longer
+connected when the next game is due, the series is cancelled. The old battle room stays open so you can look back at it.
+
+## One Mega per team
+Only one Pokemon per team (you and your ally together) can Mega Evolve per battle. Once either of you Mega Evolves, nobody
+else on your team can, including a Pokemon you later bring in from your ally's bench. If you both try to Mega Evolve on
+the same turn, the second choice is rejected.
+
 ## Confusion friendly fire
 When a confused Pokemon would hurt itself, there is a 50% chance it hits its ally instead. The damage uses the confused
 Pokemon's Attack against the ally's Defense, the log says "X hurt its ally Y in its confusion!", and the confusion
@@ -67,9 +84,9 @@ not to. Not tested on a live server: the server check builds and the rule loads,
 Your server is almost certainly running old code. Check in this order:
 1. Stop any old server: `pkill -f pokemon-showdown`, and close old windows running `start-online.sh`.
 2. Replace `setup.sh`, `start-online.sh` and `vgc-multi.patch` with the newest copies, then run `./setup.sh`.
-   It must print `OK: custom rules installed (Shared Ally Team, Shared Bench, Confusion Friendly Fire, Infatuation Friendly Fire, Ally Switch Trade, Team Healing, No Chat)`.
+   It must print `OK: custom rules installed (Shared Ally Team, Shared Bench, Confusion Friendly Fire, Infatuation Friendly Fire, Ally Switch Trade, Team Healing, One Mega Per Team, Multi Bo3 Series, No Chat)`.
 3. Run `./start-online.sh`. It must print `Server is up with the latest rules`.
-4. Start a new battle. The battle log should show rule lines for "Shared Ally Team", "Shared Bench", "Confusion Friendly Fire", "Infatuation Friendly Fire", "Ally Switch Trade", "Team Healing" and "No Chat".
+4. Start a new battle. The battle log should show rule lines for "Shared Ally Team", "Shared Bench", "Confusion Friendly Fire", "Infatuation Friendly Fire", "Ally Switch Trade", "Team Healing", "One Mega Per Team" and "No Chat" (plus "Multi Bo3 Series" in the Bo3 format).
    If those lines are missing, the battle is not on the new code.
 
 ## Notes

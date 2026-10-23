@@ -1,8 +1,8 @@
 diff --git a/config/formats.ts b/config/formats.ts
-index 9a65139..0006c54 100644
+index 9a65139..4df861c 100644
 --- a/config/formats.ts
 +++ b/config/formats.ts
-@@ -18,6 +18,18 @@ The column value will be ignored for repeat sections.
+@@ -18,6 +18,26 @@ The column value will be ignored for repeat sections.
  */
  
  export const Formats: import('../sim/dex-formats').FormatList = [
@@ -15,7 +15,15 @@ index 9a65139..0006c54 100644
 +		mod: 'champions',
 +		gameType: 'multi',
 +		searchShow: false,
-+		ruleset: ['[Gen 9 Champions] VGC 2026 Reg M-C', '!! Picked Team Size = 2', 'Shared Ally Team', 'Shared Bench', 'Confusion Friendly Fire', 'Infatuation Friendly Fire', 'Ally Switch Trade', 'Team Healing', 'No Chat'],
++		ruleset: ['[Gen 9 Champions] VGC 2026 Reg M-C', '!! Picked Team Size = 2', 'Shared Ally Team', 'Shared Bench', 'Confusion Friendly Fire', 'Infatuation Friendly Fire', 'Ally Switch Trade', 'Team Healing', 'One Mega Per Team', 'No Chat'],
++	},
++	{
++		name: "[Gen 9 Champions] VGC Reg M-C Multi Lead+Back Bo3",
++		desc: `Best-of-3 version of the Lead+Back multi format: first team to win 2 games wins. Open Team Sheets are mandatory and shown automatically. The same four players and teams play every game.`,
++		mod: 'champions',
++		gameType: 'multi',
++		searchShow: false,
++		ruleset: ['[Gen 9 Champions] VGC Reg M-C Multi Lead+Back', '!Open Team Sheets', 'Force Open Team Sheets', 'Multi Bo3 Series'],
 +	},
 +
  
@@ -100,10 +108,10 @@ index 2808538..1a23d8c 100644
  		slotCondition: 'revivalblessing',
  		// No this not a real switchout move
 diff --git a/data/rulesets.ts b/data/rulesets.ts
-index 5103c04..8dc25f0 100644
+index 5103c04..345cb88 100644
 --- a/data/rulesets.ts
 +++ b/data/rulesets.ts
-@@ -775,6 +775,70 @@ export const Rulesets: import('../sim/dex-formats').FormatDataTable = {
+@@ -775,6 +775,86 @@ export const Rulesets: import('../sim/dex-formats').FormatDataTable = {
  			'Timer Add Per Turn = 5', 'Timer Max Per Turn = 15', 'Timer Max First Turn = 40',
  		],
  	},
@@ -121,6 +129,22 @@ index 5103c04..8dc25f0 100644
 +		desc: "Disables chat in this battle room for everyone, and blocks private messages between the battle's players. Battle buttons and commands (including Open Team Sheets Accept/Reject) still work",
 +		onBegin() {
 +			this.add('rule', 'No Chat: Chat is disabled in this battle.');
++		},
++	},
++	onemegaperteam: {
++		effectType: 'Rule',
++		name: 'One Mega Per Team',
++		desc: "In multi battles, only one Pok&eacute;mon on each team (you and your ally) can Mega Evolve per battle",
++		onBegin() {
++			this.add('rule', 'One Mega Per Team: Only one Pokemon per team can Mega Evolve.');
++		},
++	},
++	multibo3series: {
++		effectType: 'Rule',
++		name: 'Multi Bo3 Series',
++		desc: "A best-of-3 series for 4-player multi battles: after each game the same four players are put into the next game with the same teams, until one team wins 2 games",
++		onBegin() {
++			this.add('rule', 'Best-of-3: The first team to win 2 games wins the series.');
 +		},
 +	},
 +	allyswitchtrade: {
@@ -223,8 +247,158 @@ index 2918f4f..26cc727 100644
  		if (!user.named) {
  			throw new Chat.ErrorMessage(this.TL`You must choose a name before you can talk.`);
  		}
+diff --git a/server/room-battle.ts b/server/room-battle.ts
+index ce18056..f9fd75b 100644
+--- a/server/room-battle.ts
++++ b/server/room-battle.ts
+@@ -12,7 +12,7 @@
+  */
+ 
+ import { execSync } from "child_process";
+-import { ProcessManager, type Streams } from '../lib';
++import { ProcessManager, Utils, type Streams } from '../lib';
+ import { BattleStream } from "../sim/battle-stream";
+ import { RoomGamePlayer, RoomGame } from "./room-game";
+ import * as ConfigLoader from './config-loader';
+@@ -470,6 +470,15 @@ export interface RoomBattlePlayerOptions {
+ 	hidden?: boolean;
+ }
+ 
++/** State of a best-of-3 series between two teams of 2 players ('Multi Bo3 Series' rule) */
++export interface MultiSeries {
++	game: number;
++	score: [number, number];
++	/** packed teams of players 1 and 2 (players 3 and 4 use copies of their ally's team) */
++	teams: (string | undefined)[];
++	userids: ID[];
++}
++
+ export interface RoomBattleOptions {
+ 	format: string;
+ 	/**
+@@ -482,6 +491,7 @@ export interface RoomBattleOptions {
+ 	 */
+ 	players: RoomBattlePlayerOptions[];
+ 	delayedStart?: boolean | 'multi';
++	series?: MultiSeries;
+ 	challengeType?: ChallengeType;
+ 	allowRenames?: boolean;
+ 	rated?: number | boolean | null;
+@@ -505,6 +515,9 @@ export class RoomBattle extends RoomGame<RoomBattlePlayer> {
+ 	override readonly title: string;
+ 	override readonly allowRenames: boolean;
+ 	readonly format: string;
++	/** ids and names of everyone who joined, in slot order (a forfeiting player's slot is cleared before the game ends) */
++	knownPlayerIds: ID[] = [];
++	knownPlayerNames: string[] = [];
+ 	/** Will exist even if the game is unrated, in case it's later forced to be rated */
+ 	readonly ladder: string;
+ 	readonly gameType: string | undefined;
+@@ -590,6 +603,10 @@ export class RoomBattle extends RoomGame<RoomBattlePlayer> {
+ 			const p = options.players[i];
+ 			const player = this.addPlayer(p?.user || null, p || null);
+ 			if (!player) throw new Error(`failed to create player ${i + 1} in ${room.roomid}`);
++			if (p?.user) {
++				this.knownPlayerIds[i] = p.user.id;
++				this.knownPlayerNames[i] = p.user.name;
++			}
+ 		}
+ 		if (options.inputLog) {
+ 			let scanIndex = 0;
+@@ -861,6 +878,7 @@ export class RoomBattle extends RoomGame<RoomBattlePlayer> {
+ 			this.logData = null;
+ 		}
+ 		this.room.parent?.game?.onBattleWin?.(this.room, winnerid);
++		this.handleSeries(winnerid);
+ 		// If the room's replay was hidden, don't let users join after the game is over
+ 		if (this.room.hideReplay) {
+ 			this.room.settings.modjoin = '%';
+@@ -881,6 +899,73 @@ export class RoomBattle extends RoomGame<RoomBattlePlayer> {
+ 			return this.room.uploadReplay(undefined, undefined, options);
+ 		}
+ 	}
++	/** 'Multi Bo3 Series' rule: tally the result and start the next game */
++	handleSeries(winnerid: ID) {
++		if (this.players.length !== 4) return;
++		if (!Dex.formats.getRuleTable(Dex.formats.get(this.format)).has('multibo3series')) return;
++		const series: MultiSeries = this.options.series || {
++			game: 1,
++			score: [0, 0],
++			teams: [this.options.players[0]?.team, this.options.players[1]?.team],
++			userids: [...this.knownPlayerIds],
++		};
++		const ids = this.knownPlayerIds;
++		let winningTeam = -1;
++		if (winnerid === ids[0] || winnerid === ids[2]) winningTeam = 0;
++		if (winnerid === ids[1] || winnerid === ids[3]) winningTeam = 1;
++		const pn = this.knownPlayerNames;
++		const names = [`${pn[0]} & ${pn[2]}`, `${pn[1]} & ${pn[3]}`];
++		const score: [number, number] = [
++			series.score[0] + (winningTeam === 0 ? 1 : 0),
++			series.score[1] + (winningTeam === 1 ? 1 : 0),
++		];
++		const SERIES_DELAY = 20;
++		const MAX_GAMES = 5;
++		const scoreLine = Utils.html`${names[0]} ${score[0]} - ${score[1]} ${names[1]}`;
++		const seriesWinner = score[0] >= 2 ? 0 : score[1] >= 2 ? 1 : -1;
++		if (seriesWinner >= 0) {
++			this.room.add(
++				`|html|<div class="broadcast-green"><strong>Game ${series.game} won by ${Utils.escapeHTML(names[winningTeam])}.</strong><br />` +
++				`<strong>${Utils.escapeHTML(names[seriesWinner])} win the best-of-3 series!</strong> Final score: ${scoreLine}</div>`
++			).update();
++			return;
++		}
++		if (series.game >= MAX_GAMES) {
++			this.room.add(`|html|<div class="broadcast-blue">Too many tied games. The best-of-3 series ends here. Score: ${scoreLine}</div>`).update();
++			return;
++		}
++		const result = winningTeam >= 0 ?
++			`Game ${series.game} won by ${Utils.escapeHTML(names[winningTeam])}.` :
++			`Game ${series.game} was a tie and will be replayed.`;
++		this.room.add(
++			`|html|<div class="broadcast-blue"><strong>${result}</strong> Series score: ${scoreLine}<br />` +
++			`The next game starts in ${SERIES_DELAY} seconds.</div>`
++		).update();
++		const next: MultiSeries = { ...series, game: series.game + 1, score };
++		setTimeout(() => this.startNextSeriesGame(next, names), SERIES_DELAY * 1000);
++	}
++	startNextSeriesGame(series: MultiSeries, names: string[]) {
++		const users = series.userids.map(id => Users.get(id));
++		if (users.some(user => !user?.connected)) {
++			this.room.add(`|html|<div class="broadcast-red">The best-of-3 series was cancelled because a player is no longer connected.</div>`).update();
++			return;
++		}
++		const options: RoomBattleOptions & Partial<RoomSettings> = {
++			format: this.format,
++			players: users.map((user, i) => ({ user: user!, team: i < 2 ? series.teams[i] : undefined })),
++			challengeType: this.challengeType,
++			rated: false,
++			series,
++		};
++		const room = Rooms.createBattle(options);
++		if (!room) {
++			this.room.add(`|html|<div class="broadcast-red">The next game could not be started.</div>`).update();
++			return;
++		}
++		const scoreLine = Utils.html`${names[0]} ${series.score[0]} - ${series.score[1]} ${names[1]}`;
++		room.add(`|html|<div class="broadcast-blue"><strong>Game ${series.game} of the best-of-3.</strong> Series score: ${scoreLine}</div>`).update();
++		this.room.add(`|uhtml|nextgame|Next: <a href="/${room.roomid}"><strong>Game ${series.game}</strong></a>`).update();
++	}
+ 	async updateLadder(p1score: number, winnerid: ID) {
+ 		this.room.rated = 0;
+ 		const winner = Users.get(winnerid);
+@@ -1167,6 +1252,9 @@ export class RoomBattle extends RoomGame<RoomBattlePlayer> {
+ 		if (user) {
+ 			player.active = user.inRooms.has(this.roomid);
+ 			player.knownActive = true;
++			const playerIndex = this.players.indexOf(player);
++			this.knownPlayerIds[playerIndex] = user.id;
++			this.knownPlayerNames[playerIndex] = player.name;
+ 			const options = {
+ 				name: player.name,
+ 				avatar: user.avatar,
 diff --git a/sim/battle-actions.ts b/sim/battle-actions.ts
-index 634eafc..963df81 100644
+index 634eafc..3a4a502 100644
 --- a/sim/battle-actions.ts
 +++ b/sim/battle-actions.ts
 @@ -1901,11 +1901,12 @@ export class BattleActions {
@@ -241,6 +415,28 @@ index 634eafc..963df81 100644
 +		const defense = target.calculateStat('def', target.boosts['def']);
  		const level = pokemon.level;
  		const baseDamage = tr(tr(tr(tr(2 * level / 5 + 2) * basePower * attack) / defense) / 50) + 2;
+ 
+@@ -1957,11 +1958,16 @@ export class BattleActions {
+ 
+ 		// Limit one mega evolution
+ 		const wasMega = pokemon.canMegaEvo;
+-		for (const ally of pokemon.side.pokemon) {
+-			if (wasMega) {
+-				ally.canMegaEvo = false;
+-			} else {
+-				ally.canUltraBurst = null;
++		const sides = [pokemon.side];
++		// One Mega Per Team: the ally's side is limited too (in multi battles each ally is its own side)
++		if (this.battle.ruleTable.has('onemegaperteam') && pokemon.side.allySide) sides.push(pokemon.side.allySide);
++		for (const side of sides) {
++			for (const ally of side.pokemon) {
++				if (wasMega) {
++					ally.canMegaEvo = false;
++				} else {
++					ally.canUltraBurst = null;
++				}
+ 			}
+ 		}
  
 diff --git a/sim/battle.ts b/sim/battle.ts
 index 6dc37c3..3132548 100644
@@ -384,7 +580,7 @@ index d46c1f5..a23aebb 100644
  	readonly gender: GenderName;
  	readonly happiness: number;
 diff --git a/sim/side.ts b/sim/side.ts
-index 5e8071c..d3657a0 100644
+index 5e8071c..9dee6b7 100644
 --- a/sim/side.ts
 +++ b/sim/side.ts
 @@ -354,15 +354,54 @@ export class Side {
@@ -442,7 +638,17 @@ index 5e8071c..d3657a0 100644
  		return data;
  	}
  
-@@ -924,6 +963,9 @@ export class Side {
+@@ -780,6 +819,9 @@ export class Side {
+ 		if ((mega || megax || megay) && this.choice.mega && !mixandmega) {
+ 			return this.emitChoiceError(`Can't move: You can only mega-evolve once per battle`);
+ 		}
++		if ((mega || megax || megay) && this.allySide?.choice.mega && this.battle.ruleTable.has('onemegaperteam')) {
++			return this.emitChoiceError(`Can't move: ${this.allySide.name} already chose to mega-evolve this turn, and only one Pokémon per team can`);
++		}
+ 		const ultra = (event === 'ultra');
+ 		if (ultra && !pokemon.canUltraBurst) {
+ 			return this.emitChoiceError(`Can't move: ${pokemon.name} can't ultra burst`);
+@@ -924,6 +966,9 @@ export class Side {
  			return this.emitChoiceError(`Can't switch: You sent more choices than unfainted Pokémon`);
  		}
  		const pokemon = this.active[index];
@@ -452,7 +658,7 @@ index 5e8071c..d3657a0 100644
  		let slot;
  		if (!slotText) {
  			if (this.requestState !== 'switch') {
-@@ -935,7 +977,14 @@ export class Side {
+@@ -935,7 +980,14 @@ export class Side {
  			} else {
  				if (!this.choice.forcedSwitchesLeft) return this.choosePass();
  				slot = this.active.length;
@@ -468,7 +674,7 @@ index 5e8071c..d3657a0 100644
  			}
  		} else {
  			slot = parseInt(slotText) - 1;
-@@ -943,7 +992,7 @@ export class Side {
+@@ -943,7 +995,7 @@ export class Side {
  		if (isNaN(slot) || slot < 0) {
  			// maybe it's a name/species id!
  			slot = -1;
@@ -477,7 +683,7 @@ index 5e8071c..d3657a0 100644
  				if (slotText!.toLowerCase() === mon.name.toLowerCase() || toID(slotText) === mon.species.id) {
  					slot = i;
  					break;
-@@ -953,14 +1002,14 @@ export class Side {
+@@ -953,14 +1005,14 @@ export class Side {
  				return this.emitChoiceError(`Can't switch: You do not have a Pokémon named "${slotText!}" to switch to`);
  			}
  		}
@@ -494,7 +700,7 @@ index 5e8071c..d3657a0 100644
  
  		if (this.slotConditions[pokemon.position]['revivalblessing']) {
  			if (!targetPokemon.fainted) {
-@@ -981,6 +1030,17 @@ export class Side {
+@@ -981,6 +1033,17 @@ export class Side {
  			return this.emitChoiceError(`Can't switch: You can't switch to a fainted Pokémon`);
  		}
  
@@ -512,7 +718,7 @@ index 5e8071c..d3657a0 100644
  		if (this.requestState === 'move') {
  			if (pokemon.trapped) {
  				return this.emitChoiceError(`Can't switch: The active Pokémon is trapped`, { pokemon, update: req => {
-@@ -1070,6 +1130,27 @@ export class Side {
+@@ -1070,6 +1133,27 @@ export class Side {
  			}
  		}
  
@@ -540,7 +746,7 @@ index 5e8071c..d3657a0 100644
  		const result = ruleTable.onChooseTeam?.[0].call(this.battle, positions, this.pokemon, !data);
  		if (result) {
  			if (typeof result === 'string') {
-@@ -1091,6 +1172,12 @@ export class Side {
+@@ -1091,6 +1175,12 @@ export class Side {
  			});
  		}
  

@@ -20,7 +20,7 @@ cleanup() { kill "$SERVER_PID" "$TUNNEL_PID" 2>/dev/null || true; }
 trap cleanup EXIT INT TERM
 
 # Refuse to run if the custom rules are missing (means setup.sh was not rerun after an update).
-for rule in "Shared Ally Team" "Shared Bench" "Confusion Friendly Fire" "Infatuation Friendly Fire" "Ally Switch Trade" "Team Healing" "No Chat"; do
+for rule in "Shared Ally Team" "Shared Bench" "Confusion Friendly Fire" "Infatuation Friendly Fire" "Ally Switch Trade" "Team Healing" "One Mega Per Team" "Multi Bo3 Series" "No Chat"; do
   grep -q "name: '$rule'" "$SD/data/rulesets.ts" || { echo "ERROR: your server is missing the '$rule' rule. Run ./setup.sh again, then retry."; exit 1; }
 done
 
@@ -40,7 +40,7 @@ for _ in $(seq 1 60); do
 done
 curl -s -m 2 localhost:8000/showdown/info >/dev/null 2>&1 || { echo "Server did not start. Log:"; tail -20 "$SDLOG"; exit 1; }
 if grep -q CRASH "$SDLOG"; then echo "Server reported an error. Log:"; tail -20 "$SDLOG"; exit 1; fi
-echo "Server is up with the latest rules (Shared Ally Team, Shared Bench, Confusion Friendly Fire, Infatuation Friendly Fire, Ally Switch Trade, Team Healing, No Chat)."
+echo "Server is up with the latest rules (Shared Ally Team, Shared Bench, Confusion Friendly Fire, Infatuation Friendly Fire, Ally Switch Trade, Team Healing, One Mega Per Team, Multi Bo3 Series, No Chat)."
 
 LOG="$(mktemp)"
 cloudflared tunnel --no-autoupdate --url http://localhost:8000 >"$LOG" 2>&1 &
