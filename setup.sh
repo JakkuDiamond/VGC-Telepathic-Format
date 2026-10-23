@@ -3,13 +3,13 @@
 # The patch is built into this file, so nothing else needs to be copied. Requires: git, Node.js >= 22.18, npm.
 set -euo pipefail
 COMMIT=d601443456c795f77c6e4f2b5b459167f2b10a3c   # Showdown version this was tested against
-PATCH_VERSION=f7f60484
+PATCH_VERSION=5d8bb29b
 
 echo "[1/5] setup.sh patch version $PATCH_VERSION"
 PATCH_FILE="$(mktemp)"
 cat >"$PATCH_FILE" <<'VGC_PATCH_EOF'
 diff --git a/config/formats.ts b/config/formats.ts
-index 9a65139..6ef49f8 100644
+index 9a65139..0006c54 100644
 --- a/config/formats.ts
 +++ b/config/formats.ts
 @@ -18,6 +18,18 @@ The column value will be ignored for repeat sections.
@@ -25,17 +25,95 @@ index 9a65139..6ef49f8 100644
 +		mod: 'champions',
 +		gameType: 'multi',
 +		searchShow: false,
-+		ruleset: ['[Gen 9 Champions] VGC 2026 Reg M-C', '!! Picked Team Size = 2', 'Shared Ally Team', 'Shared Bench', 'No Chat'],
++		ruleset: ['[Gen 9 Champions] VGC 2026 Reg M-C', '!! Picked Team Size = 2', 'Shared Ally Team', 'Shared Bench', 'Confusion Friendly Fire', 'Infatuation Friendly Fire', 'Ally Switch Trade', 'Team Healing', 'No Chat'],
 +	},
 +
  
  	// S/V Singles
  	///////////////////////////////////////////////////////////////////
+diff --git a/data/conditions.ts b/data/conditions.ts
+index c72966a..952d546 100644
+--- a/data/conditions.ts
++++ b/data/conditions.ts
+@@ -188,10 +188,17 @@ export const Conditions: import('../sim/dex-conditions').ConditionDataTable = {
+ 				return;
+ 			}
+ 			this.activeTarget = pokemon;
+-			const damage = this.actions.getConfusionDamage(pokemon, 40);
++			let victim = pokemon;
++			if (this.ruleTable.has('confusionfriendlyfire')) {
++				// Confusion Friendly Fire: 50% chance to hurt the adjacent ally instead of itself
++				const ally = pokemon.adjacentAllies()[0];
++				if (ally && this.randomChance(1, 2)) victim = ally;
++			}
++			const damage = this.actions.getConfusionDamage(pokemon, 40, victim);
+ 			if (typeof damage !== 'number') throw new Error("Confusion damage not dealt");
+ 			const activeMove = { id: this.toID('confused'), effectType: 'Move', type: '???' };
+-			this.damage(damage, pokemon, pokemon, activeMove as ActiveMove);
++			if (victim !== pokemon) this.add('-message', `${pokemon.name} hurt its ally ${victim.name} in its confusion!`);
++			this.damage(damage, victim, pokemon, activeMove as ActiveMove);
+ 			return false;
+ 		},
+ 	},
+diff --git a/data/moves.ts b/data/moves.ts
+index 2808538..1a23d8c 100644
+--- a/data/moves.ts
++++ b/data/moves.ts
+@@ -312,6 +312,17 @@ export const Moves: import('../sim/dex-moves').MoveDataTable = {
+ 			return pokemon.addVolatile('allyswitch');
+ 		},
+ 		onHit(pokemon) {
++			if (this.ruleTable.has('allyswitchtrade') && this.gameType === 'multi') {
++				// Ally Switch Trade: trade active Pokemon (and who controls them) with the ally
++				const ally = pokemon.adjacentAllies()[0];
++				if (!ally || ally.fainted) {
++					this.add('-fail', pokemon, 'move: Ally Switch');
++					this.attrLastMove('[still]');
++					return this.NOT_FAIL;
++				}
++				this.tradeActiveAllies(pokemon, ally);
++				return;
++			}
+ 			let success = true;
+ 			// Fail in formats where you don't control allies
+ 			if (this.gameType !== 'doubles' && this.gameType !== 'triples') success = false;
+@@ -743,6 +754,17 @@ export const Moves: import('../sim/dex-moves').MoveDataTable = {
+ 			onBeforeMove(pokemon, target, move) {
+ 				this.add('-activate', pokemon, 'move: Attract', '[of] ' + this.effectState.source);
+ 				if (this.randomChance(1, 2)) {
++					if (this.ruleTable.has('infatuationfriendlyfire') && move.category !== 'Status' &&
++						['normal', 'any', 'adjacentFoe', 'randomNormal'].includes(move.target)) {
++						// Infatuation Friendly Fire: 50% of the time, attack the ally instead of being immobilized
++						const ally = pokemon.adjacentAllies()[0];
++						if (ally && this.randomChance(1, 2)) {
++							this.add('-message', `${pokemon.name} is so infatuated it attacks its ally ${ally.name}!`);
++							pokemon.deductPP(move.id, 1, ally);
++							this.actions.useMove(move, pokemon, { target: ally });
++							return false;
++						}
++					}
+ 					this.add('cant', pokemon, 'Attract');
+ 					return false;
+ 				}
+@@ -15115,9 +15137,10 @@ export const Moves: import('../sim/dex-moves').MoveDataTable = {
+ 		priority: 0,
+ 		flags: { heal: 1, nosketch: 1 },
+ 		onTryHit(source) {
+-			if (!source.side.pokemon.filter(ally => ally.fainted).length) {
+-				return false;
+-			}
++			if (source.side.pokemon.some(ally => ally.fainted)) return;
++			// Team Healing: fainted Pokemon on the ally's side count too
++			if (this.ruleTable.has('teamhealing') && source.side.allySide?.pokemon.some(ally => ally.fainted)) return;
++			return false;
+ 		},
+ 		slotCondition: 'revivalblessing',
+ 		// No this not a real switchout move
 diff --git a/data/rulesets.ts b/data/rulesets.ts
-index 5103c04..7038177 100644
+index 5103c04..8dc25f0 100644
 --- a/data/rulesets.ts
 +++ b/data/rulesets.ts
-@@ -775,6 +775,38 @@ export const Rulesets: import('../sim/dex-formats').FormatDataTable = {
+@@ -775,6 +775,70 @@ export const Rulesets: import('../sim/dex-formats').FormatDataTable = {
  			'Timer Add Per Turn = 5', 'Timer Max Per Turn = 15', 'Timer Max First Turn = 40',
  		],
  	},
@@ -53,6 +131,38 @@ index 5103c04..7038177 100644
 +		desc: "Disables chat in this battle room for everyone, and blocks private messages between the battle's players. Battle buttons and commands (including Open Team Sheets Accept/Reject) still work",
 +		onBegin() {
 +			this.add('rule', 'No Chat: Chat is disabled in this battle.');
++		},
++	},
++	allyswitchtrade: {
++		effectType: 'Rule',
++		name: 'Ally Switch Trade',
++		desc: "In multi battles, Ally Switch trades the user's active Pok&eacute;mon with its ally's active Pok&eacute;mon, so the two players swap control of them",
++		onBegin() {
++			this.add('rule', 'Ally Switch Trade: Ally Switch swaps your active Pokemon with your ally\'s, and you swap control of them.');
++		},
++	},
++	teamhealing: {
++		effectType: 'Rule',
++		name: 'Team Healing',
++		desc: "In multi battles, Revival Blessing can revive any fainted Pok&eacute;mon on the team of 4, including ones your ally controls (Heal Bell and Aromatherapy already cure the whole team)",
++		onBegin() {
++			this.add('rule', 'Team Healing: Revival Blessing can revive your ally\'s fainted Pokemon too.');
++		},
++	},
++	infatuationfriendlyfire: {
++		effectType: 'Rule',
++		name: 'Infatuation Friendly Fire',
++		desc: "When an infatuated Pok&eacute;mon would be immobilized by love, there is a 50% chance it uses its single-target damaging move on its ally instead",
++		onBegin() {
++			this.add('rule', 'Infatuation Friendly Fire: An infatuated Pokemon may attack its ally instead of being immobilized.');
++		},
++	},
++	confusionfriendlyfire: {
++		effectType: 'Rule',
++		name: 'Confusion Friendly Fire',
++		desc: "When a confused Pok&eacute;mon hurts itself in its confusion, there is a 50% chance it hits its ally instead (using its Attack against the ally's Defense)",
++		onBegin() {
++			this.add('rule', 'Confusion Friendly Fire: A confused Pokemon may hit its ally instead of itself.');
 +		},
 +	},
 +	sharedbench: {
@@ -123,8 +233,27 @@ index 2918f4f..26cc727 100644
  		if (!user.named) {
  			throw new Chat.ErrorMessage(this.TL`You must choose a name before you can talk.`);
  		}
+diff --git a/sim/battle-actions.ts b/sim/battle-actions.ts
+index 634eafc..963df81 100644
+--- a/sim/battle-actions.ts
++++ b/sim/battle-actions.ts
+@@ -1901,11 +1901,12 @@ export class BattleActions {
+ 	 * context for its damage, unlike the regular damage formula (though this only comes up
+ 	 * for base damage).
+ 	 */
+-	getConfusionDamage(pokemon: Pokemon, basePower: number) {
++	getConfusionDamage(pokemon: Pokemon, basePower: number, target: Pokemon = pokemon) {
+ 		const tr = this.battle.trunc;
+ 
+ 		const attack = pokemon.calculateStat('atk', pokemon.boosts['atk']);
+-		const defense = pokemon.calculateStat('def', pokemon.boosts['def']);
++		// Confusion Friendly Fire: the confused Pokemon can hit its ally, using the ally's Defense
++		const defense = target.calculateStat('def', target.boosts['def']);
+ 		const level = pokemon.level;
+ 		const baseDamage = tr(tr(tr(tr(2 * level / 5 + 2) * basePower * attack) / defense) / 50) + 2;
+ 
 diff --git a/sim/battle.ts b/sim/battle.ts
-index 6dc37c3..10a5c13 100644
+index 6dc37c3..3132548 100644
 --- a/sim/battle.ts
 +++ b/sim/battle.ts
 @@ -1437,7 +1437,7 @@ export class Battle {
@@ -136,10 +265,31 @@ index 6dc37c3..10a5c13 100644
  				const switchTable = side.active.map(pokemon => !!pokemon?.switchFlag);
  				if (switchTable.some(Boolean)) {
  					requests[i] = { forceSwitch: switchTable, side: side.getRequestData() };
-@@ -1577,6 +1577,24 @@ export class Battle {
+@@ -1577,6 +1577,45 @@ export class Battle {
  		return true;
  	}
  
++	/** Ally Switch Trade rule: two allied active Pokemon trade places, and so do their controllers */
++	tradeActiveAllies(a: Pokemon, b: Pokemon) {
++		const sideA = a.side;
++		const sideB = b.side;
++		const posA = a.position;
++		const posB = b.position;
++		sideA.pokemon[posA] = b;
++		sideB.pokemon[posB] = a;
++		sideA.active[posA] = b;
++		sideB.active[posB] = a;
++		a.side = sideB;
++		b.side = sideA;
++		a.position = posB;
++		b.position = posA;
++		a.fullname = `${sideB.id}: ${a.name}`;
++		b.fullname = `${sideA.id}: ${b.name}`;
++		this.add('-message', `${sideA.name} and ${sideB.name} traded ${a.name} and ${b.name} with Ally Switch!`);
++		this.add('switch', a, a.getFullDetails);
++		this.add('switch', b, b.getFullDetails);
++	}
++
 +	/** Shared Bench rule: moves a benched Pokemon from one ally's side to the other's */
 +	transferToSide(pokemon: Pokemon, side: Side) {
 +		const from = pokemon.side;
@@ -161,7 +311,7 @@ index 6dc37c3..10a5c13 100644
  	canSwitch(side: Side) {
  		return this.possibleSwitches(side).length;
  	}
-@@ -1587,7 +1605,8 @@ export class Battle {
+@@ -1587,7 +1626,8 @@ export class Battle {
  	}
  
  	private possibleSwitches(side: Side) {
@@ -171,7 +321,7 @@ index 6dc37c3..10a5c13 100644
  
  		// should only be relevant for Gen 3
  		const queuedSwitchIns = this.queue.getSwitches(side).map(action => action.target);
-@@ -1599,6 +1618,10 @@ export class Battle {
+@@ -1599,6 +1639,10 @@ export class Battle {
  				canSwitchIn.push(pokemon);
  			}
  		}
@@ -182,7 +332,7 @@ index 6dc37c3..10a5c13 100644
  		return canSwitchIn;
  	}
  
-@@ -2813,6 +2836,7 @@ export class Battle {
+@@ -2813,14 +2857,16 @@ export class Battle {
  			return;
  		case 'instaswitch':
  		case 'switch':
@@ -190,7 +340,18 @@ index 6dc37c3..10a5c13 100644
  			if (action.choice === 'switch' && action.pokemon.status) {
  				this.singleEvent('CheckShow', this.dex.abilities.getByID('naturalcure' as ID), null, action.pokemon);
  			}
-@@ -3107,6 +3131,10 @@ export class Battle {
+ 			this.actions.switchIn(action.target, action.pokemon.position, action.sourceEffect);
+ 			break;
+ 		case 'revivalblessing':
+-			action.pokemon.side.pokemonLeft++;
+-			if (action.target.position < action.pokemon.side.active.length) {
++			// (the target may be on the ally's side with the Team Healing rule)
++			action.target.side.pokemonLeft++;
++			if (action.target.position < action.target.side.active.length) {
+ 				this.queue.addChoice({
+ 					choice: 'instaswitch',
+ 					pokemon: action.target,
+@@ -3107,6 +3153,10 @@ export class Battle {
  			}
  		}
  
@@ -201,7 +362,7 @@ index 6dc37c3..10a5c13 100644
  		side.clearChoice();
  
  		if (updated) side.emitRequest(side.activeRequest!, true);
-@@ -3287,6 +3315,10 @@ export class Battle {
+@@ -3287,6 +3337,10 @@ export class Battle {
  		const slotNum = parseInt(slot[1]) - 1;
  		if (!this.sides[slotNum]) {
  			// create player
@@ -233,10 +394,10 @@ index d46c1f5..a23aebb 100644
  	readonly gender: GenderName;
  	readonly happiness: number;
 diff --git a/sim/side.ts b/sim/side.ts
-index 5e8071c..d3bc1e9 100644
+index 5e8071c..d3657a0 100644
 --- a/sim/side.ts
 +++ b/sim/side.ts
-@@ -354,15 +354,44 @@ export class Side {
+@@ -354,15 +354,54 @@ export class Side {
  		return `${this.id}: ${this.name}`;
  	}
  
@@ -248,6 +409,15 @@ index 5e8071c..d3bc1e9 100644
 +		const ally = this.allySide;
 +		if (!ally || this.battle.turn < 1 || !this.battle.ruleTable.has('sharedbench')) return [];
 +		return ally.pokemon.slice(ally.active.length).filter(pokemon => !pokemon.fainted);
++	}
++
++	/** Team Healing rule: while Revival Blessing is choosing, the ally's fainted Pokemon can be chosen too */
++	getReviveTargets(): Pokemon[] {
++		const ally = this.allySide;
++		if (!ally || !this.battle.ruleTable.has('teamhealing')) return [];
++		const reviving = this.active.some(pokemon => pokemon && this.slotConditions[pokemon.position]['revivalblessing']);
++		if (!reviving) return [];
++		return ally.pokemon.filter(pokemon => pokemon.fainted);
 +	}
 +
 +	/** Shared Bench rule: has the ally already chosen to switch this Pokemon in this turn? */
@@ -271,8 +441,9 @@ index 5e8071c..d3bc1e9 100644
  			data.pokemon.push(pokemon.getSwitchRequestData(forAlly));
  		}
 +		if (!forAlly) {
-+			// Shared Bench: list the ally's benched Pokemon as extra switch options
-+			for (const pokemon of this.getSharedBench()) {
++			// Shared Bench / Team Healing: list the ally's Pokemon as extra switch (or revive) options
++			const extras = this.getReviveTargets();
++			for (const pokemon of extras.length ? extras : this.getSharedBench()) {
 +				const entry = pokemon.getSwitchRequestData();
 +				entry.ident = `${this.id}: ${pokemon.name}`;
 +				data.pokemon.push(entry);
@@ -281,16 +452,17 @@ index 5e8071c..d3bc1e9 100644
  		return data;
  	}
  
-@@ -924,6 +953,8 @@ export class Side {
+@@ -924,6 +963,9 @@ export class Side {
  			return this.emitChoiceError(`Can't switch: You sent more choices than unfainted Pokémon`);
  		}
  		const pokemon = this.active[index];
-+		const sharedBench = this.getSharedBench();
++		const reviveTargets = this.getReviveTargets();
++		const sharedBench = reviveTargets.length ? reviveTargets : this.getSharedBench();
 +		const pool = sharedBench.length ? [...this.pokemon, ...sharedBench] : this.pokemon;
  		let slot;
  		if (!slotText) {
  			if (this.requestState !== 'switch') {
-@@ -935,7 +966,14 @@ export class Side {
+@@ -935,7 +977,14 @@ export class Side {
  			} else {
  				if (!this.choice.forcedSwitchesLeft) return this.choosePass();
  				slot = this.active.length;
@@ -306,7 +478,7 @@ index 5e8071c..d3bc1e9 100644
  			}
  		} else {
  			slot = parseInt(slotText) - 1;
-@@ -943,7 +981,7 @@ export class Side {
+@@ -943,7 +992,7 @@ export class Side {
  		if (isNaN(slot) || slot < 0) {
  			// maybe it's a name/species id!
  			slot = -1;
@@ -315,7 +487,7 @@ index 5e8071c..d3bc1e9 100644
  				if (slotText!.toLowerCase() === mon.name.toLowerCase() || toID(slotText) === mon.species.id) {
  					slot = i;
  					break;
-@@ -953,14 +991,14 @@ export class Side {
+@@ -953,14 +1002,14 @@ export class Side {
  				return this.emitChoiceError(`Can't switch: You do not have a Pokémon named "${slotText!}" to switch to`);
  			}
  		}
@@ -332,7 +504,7 @@ index 5e8071c..d3bc1e9 100644
  
  		if (this.slotConditions[pokemon.position]['revivalblessing']) {
  			if (!targetPokemon.fainted) {
-@@ -981,6 +1019,17 @@ export class Side {
+@@ -981,6 +1030,17 @@ export class Side {
  			return this.emitChoiceError(`Can't switch: You can't switch to a fainted Pokémon`);
  		}
  
@@ -350,7 +522,7 @@ index 5e8071c..d3bc1e9 100644
  		if (this.requestState === 'move') {
  			if (pokemon.trapped) {
  				return this.emitChoiceError(`Can't switch: The active Pokémon is trapped`, { pokemon, update: req => {
-@@ -1070,6 +1119,27 @@ export class Side {
+@@ -1070,6 +1130,27 @@ export class Side {
  			}
  		}
  
@@ -378,7 +550,7 @@ index 5e8071c..d3bc1e9 100644
  		const result = ruleTable.onChooseTeam?.[0].call(this.battle, positions, this.pokemon, !data);
  		if (result) {
  			if (typeof result === 'string') {
-@@ -1091,6 +1161,12 @@ export class Side {
+@@ -1091,6 +1172,12 @@ export class Side {
  			});
  		}
  
@@ -409,10 +581,10 @@ if ! git apply "$PATCH_FILE.lf"; then
   echo "ERROR: could not apply the patch. Delete the pokemon-showdown folder (rm -rf pokemon-showdown) and run ./setup.sh again." >&2
   exit 1
 fi
-for rule in "Shared Ally Team" "Shared Bench" "No Chat"; do
+for rule in "Shared Ally Team" "Shared Bench" "Confusion Friendly Fire" "Infatuation Friendly Fire" "Ally Switch Trade" "Team Healing" "No Chat"; do
   grep -q "name: '$rule'" data/rulesets.ts || { echo "ERROR: rule '$rule' missing after patching." >&2; exit 1; }
 done
-echo "OK: custom rules installed (Shared Ally Team, Shared Bench, No Chat)."
+echo "OK: custom rules installed (Shared Ally Team, Shared Bench, Confusion Friendly Fire, Infatuation Friendly Fire, Ally Switch Trade, Team Healing, No Chat)."
 
 echo "[4/5] Installing dependencies (this takes a few minutes)..."
 npm install
