@@ -112,6 +112,19 @@ Your server is almost certainly running old code. Check in this order:
 4. Start a new battle. The battle log should show rule lines for "Shared Ally Team", "Shared Bench", "Confusion Friendly Fire", "Infatuation Friendly Fire", "Ally Switch Trade", "Team Healing", "One Mega Per Team" and "No Chat" (plus "Multi Bo3 Series" in the Bo3 format).
    If those lines are missing, the battle is not on the new code.
 
+## Tunnel will not start ("failed to request quick Tunnel ... context deadline exceeded")
+This means your PC could not reach Cloudflare's tunnel service. The game server is fine. Try, in order:
+1. Run `./start-online.sh` again. The script now retries 3 times by itself (the later tries use IPv4, TCP and the system DNS).
+   Manual version: `GODEBUG=netdns=cgo cloudflared tunnel --no-autoupdate --protocol http2 --edge-ip-version 4 --url http://localhost:8000`
+2. Check the connection from Ubuntu: `curl -sS -m 10 -o /dev/null -w '%{http_code}\n' https://api.trycloudflare.com`
+   (a number means it works; a timeout means something is blocking it) and `curl -sS -m 10 -I https://www.google.com`.
+3. If even google.com times out, fix Ubuntu's DNS: run `sudo sh -c 'printf "[network]\ngenerateResolvConf = false\n" > /etc/wsl.conf'`,
+   then `sudo sh -c 'printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > /etc/resolv.conf'`, then in PowerShell run `wsl --shutdown`
+   and open Ubuntu again.
+4. Turn off any VPN, and check Windows Firewall or antivirus is not blocking WSL.
+5. If Cloudflare stays blocked on your network, use another tunnel such as ngrok (free account) with
+   `ngrok http 8000`, and send friends `https://play.pokemonshowdown.com/~~YOUR-NGROK-HOST`.
+
 ## Notes
 - Open Team Sheets is opt-in: all 4 players must click Accept at team preview, and any Deny cancels it. Use
   `Force Open Team Sheets` in the format's ruleset if you want it mandatory (untested).

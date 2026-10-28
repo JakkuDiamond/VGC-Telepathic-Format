@@ -53,10 +53,14 @@ echo "Server is up with the latest rules (Shared Ally Team, Shared Bench, Confus
 LOG="$(mktemp)"
 URL=""
 # Cloudflare's quick-tunnel service is sometimes slow to answer, so try up to 3 times.
-# Attempts 2 and 3 use IPv4 and TCP (http2), which helps on networks that block UDP or IPv6.
+# Attempts 2 and 3 use IPv4, TCP (http2) and the system DNS resolver, which helps on networks that block UDP or IPv6.
 for attempt in 1 2 3; do
   EXTRA=""
-  [ "$attempt" -gt 1 ] && EXTRA="--protocol http2 --edge-ip-version 4"
+  if [ "$attempt" -gt 1 ]; then
+    EXTRA="--protocol http2 --edge-ip-version 4"
+    # Use the system DNS resolver instead of cloudflared's built-in one (fixes some WSL setups).
+    export GODEBUG=netdns=cgo
+  fi
   echo "Starting the tunnel (attempt $attempt of 3)..."
   : >"$LOG"
   cloudflared tunnel --no-autoupdate $EXTRA --url http://localhost:8000 >"$LOG" 2>&1 &
