@@ -5,6 +5,29 @@
 - **[Gen 9 Champions] VGC Reg M-C Multi Lead+Back Bo3** (Best-of-3): Open Team Sheets are mandatory and shown automatically.
   Pick the Bo3 format instead of the Bo1 one when challenging. Everything else (teams, picks, rules) is identical.
 
+## VGC Blitz (2-player formats)
+Two extra formats, both normal 2-player VGC doubles on Reg M-C rules (they inherit `[Gen 9 Champions] VGC 2026 Reg M-C`):
+- **[Gen 9 Champions] VGC Blitz** (Best-of-1)
+- **[Gen 9 Champions] VGC Blitz (Bo3)** (Best-of-3, uses Showdown's normal best-of-3 series)
+
+Both have mandatory, automatic Open Team Sheets and a battle timer that is always on and cannot be turned off by
+anyone (players or staff: `/timer off` is refused). The timer, compared with normal Reg M-C:
+
+| | Reg M-C | VGC Blitz |
+|---|---|---|
+| Team Preview | 90 s | 120 s |
+| Your Time (each player's bank) | 7 min | 3 min |
+| Time per turn | 55 s | 20 s |
+| Grace (extra time at the start) | 90 s | 120 s |
+
+Note: Showdown's VGC timer has no separate 20-minute "Total Time" clock; "Your Time" is each player's total bank, and the
+move-selection limit is 55 s (not 45 s) in normal Reg M-C. When time runs out Showdown picks for you automatically.
+
+## Animations (VGC Blitz)
+Battle animations are drawn by each player's own browser, so the server cannot turn them off. To skip them, each player
+opens the settings (gear/Options menu) and ticks **Disable animations**. It is saved in that browser, so it is a
+one-time setting per player and device.
+
 ## Install
     ./setup.sh
     cd pokemon-showdown && node pokemon-showdown 8000
@@ -84,7 +107,7 @@ not to. Not tested on a live server: the server check builds and the rule loads,
 Your server is almost certainly running old code. Check in this order:
 1. Stop any old server: `pkill -f pokemon-showdown`, and close old windows running `start-online.sh`.
 2. Replace `setup.sh`, `start-online.sh` and `vgc-multi.patch` with the newest copies, then run `./setup.sh`.
-   It must print `OK: custom rules installed (Shared Ally Team, Shared Bench, Confusion Friendly Fire, Infatuation Friendly Fire, Ally Switch Trade, Team Healing, One Mega Per Team, Multi Bo3 Series, No Chat)`.
+   It must print `OK: custom rules installed (Shared Ally Team, Shared Bench, Confusion Friendly Fire, Infatuation Friendly Fire, Ally Switch Trade, Team Healing, One Mega Per Team, Multi Bo3 Series, VGC Blitz Timer, No Chat)`.
 3. Run `./start-online.sh`. It must print `Server is up with the latest rules`.
 4. Start a new battle. The battle log should show rule lines for "Shared Ally Team", "Shared Bench", "Confusion Friendly Fire", "Infatuation Friendly Fire", "Ally Switch Trade", "Team Healing", "One Mega Per Team" and "No Chat" (plus "Multi Bo3 Series" in the Bo3 format).
    If those lines are missing, the battle is not on the new code.

@@ -3,16 +3,16 @@
 # The patch is built into this file, so nothing else needs to be copied. Requires: git, Node.js >= 22.18, npm.
 set -euo pipefail
 COMMIT=d601443456c795f77c6e4f2b5b459167f2b10a3c   # Showdown version this was tested against
-PATCH_VERSION=d8185b07
+PATCH_VERSION=cfe1e1d8
 
 echo "[1/5] setup.sh patch version $PATCH_VERSION"
 PATCH_FILE="$(mktemp)"
 cat >"$PATCH_FILE" <<'VGC_PATCH_EOF'
 diff --git a/config/formats.ts b/config/formats.ts
-index 9a65139..4df861c 100644
+index 9a65139..7278740 100644
 --- a/config/formats.ts
 +++ b/config/formats.ts
-@@ -18,6 +18,26 @@ The column value will be ignored for repeat sections.
+@@ -18,6 +18,40 @@ The column value will be ignored for repeat sections.
  */
  
  export const Formats: import('../sim/dex-formats').FormatList = [
@@ -34,6 +34,20 @@ index 9a65139..4df861c 100644
 +		gameType: 'multi',
 +		searchShow: false,
 +		ruleset: ['[Gen 9 Champions] VGC Reg M-C Multi Lead+Back', '!Open Team Sheets', 'Force Open Team Sheets', 'Multi Bo3 Series'],
++	},
++	{
++		name: "[Gen 9 Champions] VGC Blitz",
++		desc: `VGC Reg M-C in fast forward: Open Team Sheets are mandatory, and a short timer that cannot be turned off (2 minutes of Team Preview, 3 minutes Your Time, 20 seconds per turn).`,
++		mod: 'champions',
++		gameType: 'doubles',
++		ruleset: ['[Gen 9 Champions] VGC 2026 Reg M-C', '!VGC Timer', '!Open Team Sheets', 'Force Open Team Sheets', 'VGC Blitz Timer'],
++	},
++	{
++		name: "[Gen 9 Champions] VGC Blitz (Bo3)",
++		desc: `Best-of-3 version of VGC Blitz: mandatory Open Team Sheets and a short timer that cannot be turned off.`,
++		mod: 'champions',
++		gameType: 'doubles',
++		ruleset: ['[Gen 9 Champions] VGC 2026 Reg M-C', '!VGC Timer', '!Open Team Sheets', 'Force Open Team Sheets', 'VGC Blitz Timer', 'Best of = 3'],
 +	},
 +
  
@@ -118,7 +132,7 @@ index 2808538..1a23d8c 100644
  		slotCondition: 'revivalblessing',
  		// No this not a real switchout move
 diff --git a/data/rulesets.ts b/data/rulesets.ts
-index 5103c04..345cb88 100644
+index 5103c04..55d3b34 100644
 --- a/data/rulesets.ts
 +++ b/data/rulesets.ts
 @@ -775,6 +775,86 @@ export const Rulesets: import('../sim/dex-formats').FormatDataTable = {
@@ -208,8 +222,28 @@ index 5103c04..345cb88 100644
  	vgctimer: {
  		effectType: 'Rule',
  		name: 'VGC Timer',
+@@ -785,6 +865,19 @@ export const Rulesets: import('../sim/dex-formats').FormatDataTable = {
+ 			'Timeout Auto Choose', 'DC Timer Bank',
+ 		],
+ 	},
++	vgcblitztimer: {
++		effectType: 'Rule',
++		name: 'VGC Blitz Timer',
++		desc: "VGC Blitz's timer, always on and cannot be turned off: 120 second Team Preview, 3 minutes Your Time, 20 seconds per turn",
++		ruleset: [
++			'Timer Starting = 180', 'Timer Grace = 120',
++			'Timer Add Per Turn = 0', 'Timer Max Per Turn = 20', 'Timer Max First Turn = 120',
++			'Timeout Auto Choose', 'DC Timer Bank',
++		],
++		onBegin() {
++			this.add('rule', 'VGC Blitz Timer: The battle timer is always on and cannot be turned off.');
++		},
++	},
+ 	speciesclause: {
+ 		effectType: 'ValidatorRule',
+ 		name: 'Species Clause',
 diff --git a/server/chat-commands/core.ts b/server/chat-commands/core.ts
-index 6e9f0ae..6a210ed 100644
+index 6e9f0ae..eef3fe7 100644
 --- a/server/chat-commands/core.ts
 +++ b/server/chat-commands/core.ts
 @@ -1285,10 +1285,15 @@ export const commands: Chat.ChatCommands = {
@@ -232,6 +266,17 @@ index 6e9f0ae..6a210ed 100644
  		}
  
  		const fromUser = Ladders.challenges.accept(this);
+@@ -1409,6 +1414,10 @@ export const commands: Chat.ChatCommands = {
+ 			const requester = [...timer.timerRequesters].join(', ');
+ 			return this.sendReply(this.TL`The game timer is ON (requested by ${requester})`);
+ 		}
++		if ((this.meansNo(target) || target === 'stop') && room.battle &&
++			Dex.formats.getRuleTable(Dex.formats.get(room.battle.format)).has('vgcblitztimer')) {
++			throw new Chat.ErrorMessage(`The timer cannot be turned off in this format.`);
++		}
+ 		const force = user.can('timer', null, room);
+ 		if (!force && !room.game.playerTable[user.id]) {
+ 			throw new Chat.ErrorMessage(this.TL`Access denied.`);
 diff --git a/server/chat.ts b/server/chat.ts
 index 2918f4f..26cc727 100644
 --- a/server/chat.ts
@@ -258,7 +303,7 @@ index 2918f4f..26cc727 100644
  			throw new Chat.ErrorMessage(this.TL`You must choose a name before you can talk.`);
  		}
 diff --git a/server/room-battle.ts b/server/room-battle.ts
-index ce18056..f9fd75b 100644
+index ce18056..bb84dad 100644
 --- a/server/room-battle.ts
 +++ b/server/room-battle.ts
 @@ -12,7 +12,7 @@
@@ -315,6 +360,15 @@ index ce18056..f9fd75b 100644
  		}
  		if (options.inputLog) {
  			let scanIndex = 0;
+@@ -604,7 +621,7 @@ export class RoomBattle extends RoomGame<RoomBattlePlayer> {
+ 			}
+ 		}
+ 		this.timer = new RoomBattleTimer(this);
+-		if (Config.forcetimer || this.format.includes('blitz')) this.timer.start();
++		if (Config.forcetimer || this.format.includes('blitz') || Dex.formats.getRuleTable(Dex.formats.get(this.format)).has('vgcblitztimer')) this.timer.start();
+ 		this.start();
+ 	}
+ 
 @@ -861,6 +878,7 @@ export class RoomBattle extends RoomGame<RoomBattlePlayer> {
  			this.logData = null;
  		}
@@ -787,10 +841,10 @@ if ! git apply "$PATCH_FILE.lf"; then
   echo "ERROR: could not apply the patch. Delete the pokemon-showdown folder (rm -rf pokemon-showdown) and run ./setup.sh again." >&2
   exit 1
 fi
-for rule in "Shared Ally Team" "Shared Bench" "Confusion Friendly Fire" "Infatuation Friendly Fire" "Ally Switch Trade" "Team Healing" "One Mega Per Team" "Multi Bo3 Series" "No Chat"; do
+for rule in "Shared Ally Team" "Shared Bench" "Confusion Friendly Fire" "Infatuation Friendly Fire" "Ally Switch Trade" "Team Healing" "One Mega Per Team" "Multi Bo3 Series" "VGC Blitz Timer" "No Chat"; do
   grep -q "name: '$rule'" data/rulesets.ts || { echo "ERROR: rule '$rule' missing after patching." >&2; exit 1; }
 done
-echo "OK: custom rules installed (Shared Ally Team, Shared Bench, Confusion Friendly Fire, Infatuation Friendly Fire, Ally Switch Trade, Team Healing, One Mega Per Team, Multi Bo3 Series, No Chat)."
+echo "OK: custom rules installed (Shared Ally Team, Shared Bench, Confusion Friendly Fire, Infatuation Friendly Fire, Ally Switch Trade, Team Healing, One Mega Per Team, Multi Bo3 Series, VGC Blitz Timer, No Chat)."
 
 echo "[4/5] Installing dependencies (this takes a few minutes)..."
 npm install
